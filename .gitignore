@@ -1,0 +1,8 @@
+dataset
+*.json
+*.pt
+src/models
+src/__pycache__
+src/runs
+src/train.py
+src/pretrained_model
