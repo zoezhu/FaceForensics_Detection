@@ -2,7 +2,7 @@ import json
 import os
 import random
 import math
-
+import numpy as np
 import torch
 from PIL import Image, ImageFile
 from torch import tensor
@@ -39,8 +39,11 @@ class ImagesDataset(Dataset):
         self.image_paths = sorted(self.image_paths, key=lambda x: x['img_path'])
 
     def _read_images(self, video_dirs, class_name, ratio):
-        for video_dir in video_dirs[:self.max_videos]:
-            self._read_class_images(class_name, video_dir)
+        # read seperately
+        sample = np.linspace(0, len(video_dirs), self.max_videos).round().astype(int)
+        for i, video_dir in enumerate(video_dirs):
+            if i in sample:
+                self._read_class_images(class_name, video_dir)
         if not ratio == 1.:
             random.shuffle(self.image_paths)
             self.image_paths = self.image_paths[:math.ceil(len(self.image_paths)*ratio)]
@@ -56,7 +59,7 @@ class ImagesDataset(Dataset):
                 'class': class_name,
                 'img_path': os.path.join(video_dir, image_name)
             })
-
+    
     def __getitem__(self, index):
         data = [self._get_item(index + i) for i in range(-self.window_size//2 + 1, self.window_size//2 + 1)]
         mid_video_id, mid_frame_id, mid_image, target = data[len(data)//2]
@@ -114,9 +117,9 @@ def read_train_test_val_dataset(
         video_paths = listdir_with_full_paths(dataset_dir)
         videos = [x for x in video_paths if get_file_name(x) in video_ids]
         # org_l = len(videos)
-        # if spl=='train' and not ratio == 1.:
-        #     random.shuffle(videos)
-        #     videos = videos[:math.ceil(len(videos)*ratio)]
+        if not spl=='val' and not ratio==1.:
+            # random.shuffle(videos)
+            videos = videos[:math.ceil(len(videos)*ratio)]
         # print(f"in read func: {spl}, {dataset_dir}: {org_l} -> {len(videos)}, ratio: {ratio}")
         dataset = ImagesDataset(videos, name, target, transform=train_transform if spl=='train' else val_transform, ratio=ratio, **dataset_kwargs)
         yield dataset
@@ -140,19 +143,23 @@ def read_dataset(
 
 
 def read_dataset_new(
-        data_dir, train_transform, val_transform, max_videos, window_size,
+        data_dir, train_transform, val_transform, use_ratio, max_videos, window_size,
         max_images_per_video, splits_path='../dataset/splits/'
-):
-    # only c40
-    data_class_dirs = [d for d in os.listdir(data_dir) if 'c40' in d.lower()]
+):  
+    ## 训练图片的选择在这里改！！
+    # all neural and original data
+    data_class_dirs = [d for d in os.listdir(data_dir) if ('neural' in d or 'original' in d)]  # [d for d in os.listdir(data_dir) if 'c40' in d]  # use c40 only 
     
     data_sets = {}
-    ratio = 1./(len(data_class_dirs)-1)
-    print(f"data_class_dirs: {len(data_class_dirs)}, ratio: {ratio}")
+    # ratio = 1./(len(data_class_dirs)-1) if use_ratio else 1.
+    # print(f"data_class_dirs: {len(data_class_dirs)}, ratio: {ratio}")
     for data_class_dir in data_class_dirs:
         data_class_dir_path = os.path.join(data_dir, data_class_dir)
         target = 0 if 'original' in data_class_dir.lower() else 1
-        rat = 1. if 'original' in data_class_dir.lower() else ratio
+        compression = data_class_dir.split('_')[-1]
+        num_tampered_with_same_compression = len({x for x in data_class_dirs if compression in x}) - 1
+        rat = 1. if ('original' in data_class_dir.lower() or not use_ratio) else 1./num_tampered_with_same_compression
+        print(f"{data_class_dir}: {rat}")
         data_sets[data_class_dir] = read_train_test_val_dataset(
             data_class_dir_path, data_class_dir, target, splits_path, train_transform, val_transform,
             ratio=rat, max_videos=max_videos, max_images_per_video=max_images_per_video, window_size=window_size,   

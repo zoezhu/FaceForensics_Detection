@@ -6,3 +6,9 @@ src/__pycache__
 src/runs
 src/train.py
 src/pretrained_model
+src/runs
+get_train_val_data.py
+capsule_model.py
+train.py
+final_result.zip
+*.ipynb

@@ -1,3 +1,4 @@
+import logging
 import json
 from collections import OrderedDict
 
@@ -146,3 +147,56 @@ def adjust_lr(optimizer, decay_rate=0.9):
 def set_lr(optimizer, lr):
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
+
+
+def set_loger(log_path):
+    logger = logging.getLogger('myLogger')
+    logger.setLevel(logging.DEBUG)
+    # formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter('%(asctime)s %(message)s')
+    fh = logging.FileHandler(log_path)
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(formatter)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
+
+
+def model_validation(net, dataloader, criterion):
+    net.eval()
+    all_predictions= []
+    real_predictions = []
+    all_targets = []
+    loss_values = []
+
+    with torch.no_grad():
+        for data, label in dataloader:
+            data = data.cuda()
+            label = label.cuda()
+            output = net(data).squeeze()
+            bz = data.shape[0]
+            # Loss
+            loss = criterion(output, label)
+            loss_values.append(loss.item())
+
+            predictions = output > 0.0
+            all_predictions.append(predictions)
+            all_targets.append(label)
+
+            real_id = label == 1
+            real_predictions.append(predictions[real_id])
+    
+    # Acc
+    all_predictions = torch.cat(all_predictions).int()
+    all_targets = torch.cat(all_targets).int()
+    val_acc = (all_predictions == all_targets).sum().float().item()
+    val_loss = sum(loss_values) / len(loss_values)
+    val_acc /= all_targets.shape[0]
+
+    # Pri Acc
+    real_predictions = torch.cat(real_predictions).int()
+    real_acc = (real_predictions==1).sum().float().item() / len(real_predictions)
+
+    return val_loss, val_acc, real_acc
