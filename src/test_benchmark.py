@@ -9,7 +9,7 @@ import torch.nn as nn
 from torchvision import models
 from torchvision import transforms
 from facenet_pytorch import fixed_image_standardization, MTCNN
-
+from model_efficientnet.model import EfficientNet
 
 class MyResNeXt(models.resnet.ResNet): 
     def __init__(self, checkpoint, num_classes=1):
@@ -23,8 +23,8 @@ class MyResNeXt(models.resnet.ResNet):
             self.load_state_dict(checkpoint)
 
 
-# load model
-checkpoint_path = "runs/Apr11_13-14-08_bb90ec5a54cc/epc_12.pth"  #"models/Apr07_17-35-04_bb90ec5a54cc/model.pt"
+# load model - ResNext
+checkpoint_path = "runs/May12_02-47-20_4497d0b803cd/epc_12.pth"  #"models/Apr07_17-35-04_bb90ec5a54cc/model.pt"
 net = MyResNeXt(torch.load(checkpoint_path))
 net.eval()
 margin = 16

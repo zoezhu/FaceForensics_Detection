@@ -26,8 +26,9 @@ class MBConvBlock(nn.Module):
         has_se (bool): Whether the block contains a Squeeze and Excitation layer.
     """
 
-    def __init__(self, block_args, global_params):
+    def __init__(self, block_args, global_params, use_att=False):
         super().__init__()
+        self.use_att = use_att
         self._block_args = block_args
         self._bn_mom = 1 - global_params.batch_norm_momentum
         self._bn_eps = global_params.batch_norm_epsilon
@@ -57,6 +58,10 @@ class MBConvBlock(nn.Module):
             num_squeezed_channels = max(1, int(self._block_args.input_filters * self._block_args.se_ratio))
             self._se_reduce = Conv2d(in_channels=oup, out_channels=num_squeezed_channels, kernel_size=1)
             self._se_expand = Conv2d(in_channels=num_squeezed_channels, out_channels=oup, kernel_size=1)
+        
+        # Attention, channel wise is the same as se part, only define space wise
+        if self.use_att:
+            self._space_att = nn.Sequential(nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False), nn.Sigmoid())
 
         # Output phase
         final_oup = self._block_args.output_filters
@@ -77,8 +82,26 @@ class MBConvBlock(nn.Module):
             x = self._swish(self._bn0(self._expand_conv(inputs)))
         x = self._swish(self._bn1(self._depthwise_conv(x)))
 
+        # Attention
+        if self.use_att:
+            residual = x
+            # channel attention
+            avgout = F.adaptive_avg_pool2d(x, 1)
+            maxout = F.adaptive_max_pool2d(x, 1)
+            avg_squeezed = self._se_expand(self._swish(self._se_reduce(avgout)))
+            max_squeezed = self._se_expand(self._swish(self._se_reduce(maxout)))
+            x_squeezed = avg_squeezed + max_squeezed
+            x = torch.sigmoid(x_squeezed) * x
+            # space attention
+            avgout = torch.mean(x, dim=1, keepdim=True)
+            maxout, _ = torch.max(x, dim=1, keepdim=True)
+            att_x = torch.cat([avgout, maxout], dim=1)
+            x = self._space_att(att_x) * x
+            x += residual
+            x = self._swish(x)
+
         # Squeeze and Excitation
-        if self.has_se:
+        elif self.has_se:
             x_squeezed = F.adaptive_avg_pool2d(x, 1)
             x_squeezed = self._se_expand(self._swish(self._se_reduce(x_squeezed)))
             x = torch.sigmoid(x_squeezed) * x
@@ -111,7 +134,7 @@ class EfficientNet(nn.Module):
 
     """
 
-    def __init__(self, blocks_args=None, global_params=None):
+    def __init__(self, blocks_args=None, global_params=None, use_att=False):
         super().__init__()
         assert isinstance(blocks_args, list), 'blocks_args should be a list'
         assert len(blocks_args) > 0, 'block args must be greater than 0'
@@ -143,11 +166,26 @@ class EfficientNet(nn.Module):
             )
 
             # The first block needs to take care of stride and filter size increase.
-            self._blocks.append(MBConvBlock(block_args, self._global_params))
+            self._blocks.append(MBConvBlock(block_args, self._global_params, use_att=use_att))
             if block_args.num_repeat > 1:
                 block_args = block_args._replace(input_filters=block_args.output_filters, stride=1)
             for _ in range(block_args.num_repeat - 1):
                 self._blocks.append(MBConvBlock(block_args, self._global_params))
+
+        # # Attention block
+        # self.use_att = use_att
+        # if self.use_att:
+        #     filters_num = round_filters(self._blocks_args[1].output_filters, self._global_params)
+        #     # print("-"*15)
+        #     # print("filters_num: ", filters_num)
+        #     # self._att = nn.Sequential(nn.Conv2d(filters_num, filters_num, kernel_size=1, bias=False),
+        #     #                            nn.Sigmoid())
+        #     self.conv1 = nn.Sequential(nn.Conv2d(filters_num, filters_num, kernel_size=3, padding=1,bias=False), nn.BatchNorm2d(filters_num), nn.ReLU(inplace=True))
+        #     self.conv2 = nn.Sequential(nn.Conv2d(filters_num, filters_num, kernel_size=3, padding=1,bias=False), nn.BatchNorm2d(filters_num), nn.ReLU(inplace=True))
+        #     ratio = 16
+        #     self._channel_att = nn.Sequential(nn.Conv2d(filters_num, filters_num//ratio, kernel_size=1, bias=False), nn.ReLU(),
+        #                                       nn.Conv2d(filters_num//ratio, filters_num, kernel_size=1, bias=False))
+        #     self._space_att = nn.Sequential(nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False), nn.Sigmoid())
 
         # Head
         in_channels = block_args.output_filters  # output of final block
@@ -180,6 +218,27 @@ class EfficientNet(nn.Module):
             if drop_connect_rate:
                 drop_connect_rate *= float(idx) / len(self._blocks)
             x = block(x, drop_connect_rate=drop_connect_rate)
+            # # Attention block
+            # if self.use_att and idx==9:
+            #     # # Old
+            #     # x_att = self._att(x)
+            #     # x = x.mul(x_att)
+
+            #     ## Convolutional Block Attention Module
+            #     # Channel Attention
+            #     residual = x
+            #     x = self.conv1(x)
+            #     x = self.conv2(x)
+            #     avgout = self._channel_att(nn.AdaptiveAvgPool2d(1)(x))
+            #     maxout = self._channel_att(nn.AdaptiveMaxPool2d(1)(x))
+            #     x = F.sigmoid(avgout + maxout) * x
+            #     # Space Attention
+            #     avgout = torch.mean(x, dim=1, keepdim=True)
+            #     maxout, _ = torch.max(x, dim=1, keepdim=True)
+            #     att_x = torch.cat([avgout, maxout], dim=1)
+            #     x = self._space_att(att_x) * x
+            #     x += residual
+            #     x = F.relu(x, inplace=True)
 
         # Head
         x = self._swish(self._bn1(self._conv_head(x)))
@@ -200,22 +259,29 @@ class EfficientNet(nn.Module):
         return x
 
     @classmethod
-    def from_name(cls, model_name, override_params=None):
+    def from_name(cls, model_name, override_params=None, use_att=False):
         cls._check_model_name_is_valid(model_name)
         blocks_args, global_params = get_model_params(model_name, override_params)
-        return cls(blocks_args, global_params)
+        return cls(blocks_args, global_params, use_att)
 
     @classmethod
-    def from_pretrained(cls, model_name, checkpoint=None, advprop=False, num_classes=1000, in_channels=3):
-        model = cls.from_name(model_name, override_params={'num_classes': 1000})
-        model.load_state_dict(checkpoint)
-        fc_size_dict = {"efficientnet-b0": 1280,
-                        "efficientnet-b5": 2048}
-        model._fc = nn.Linear(fc_size_dict[model_name], num_classes)
+    def from_pretrained(cls, model_name, checkpoint=None, advprop=False, num_classes=1000, in_channels=3, use_att=False):
+        model = cls.from_name(model_name, override_params={'num_classes': num_classes}, use_att=use_att)
+        # if checkpoint:
+        #     model.load_state_dict(checkpoint, strict=False if use_att else True)
+        # if use_att:
+        #     print('--- Use attention, strict is False')
+        # fc_size_dict = {"efficientnet-b0": 1280,
+        #                 "efficientnet-b4": 1792,
+        #                 "efficientnet-b5": 2048,
+        #                 "efficientnet-b7": 2560}
+        # model._fc = nn.Linear(fc_size_dict[model_name], num_classes)
         if in_channels != 3:
             Conv2d = get_same_padding_conv2d(image_size = model._global_params.image_size)
             out_channels = round_filters(32, model._global_params)
             model._conv_stem = Conv2d(in_channels, out_channels, kernel_size=3, stride=2, bias=False)
+        if checkpoint:    
+            model.load_state_dict(checkpoint)
         return model
     
     @classmethod
